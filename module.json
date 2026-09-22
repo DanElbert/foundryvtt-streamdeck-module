@@ -1,0 +1,30 @@
+{
+    "id": "foundryvtt-streamdeck",
+    "title": "Stream Deck Companion",
+    "description": "Companion to the foundryvtt-streamdeck OpenAction plugin. Pushes actor sheet open/close events over the REST API relay so Stream Deck buttons update without polling.",
+    "version": "0.1.0",
+    "compatibility": {
+        "minimum": 14,
+        "verified": "14.368"
+    },
+    "authors": [
+        {
+            "name": "Dan Elbert",
+            "url": "https://github.com/DanElbert"
+        }
+    ],
+    "relationships": {
+        "requires": [
+            {
+                "id": "foundry-rest-api",
+                "type": "module"
+            }
+        ]
+    },
+    "esmodules": [
+        "scripts/main.mjs"
+    ],
+    "url": "https://github.com/DanElbert/foundryvtt-streamdeck-module",
+    "manifest": "https://raw.githubusercontent.com/DanElbert/foundryvtt-streamdeck-module/main/module.json",
+    "download": "https://github.com/DanElbert/foundryvtt-streamdeck-module/archive/refs/heads/main.zip"
+}
