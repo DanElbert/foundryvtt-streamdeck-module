@@ -32,6 +32,10 @@ Enable it in the world alongside the REST API module. There are no settings.
   button toggles it: if every selected token has the condition it is removed from all of them,
   otherwise it is added to the ones missing it. Offers the core D&D 5e conditions (not exhaustion).
 
+- **Initiative button.** With no combat and tokens selected, one press creates a combat, adds the
+  selected tokens, rolls initiative for all of them and starts round 1. While a combat exists (the
+  one the combat tracker is showing), the deck shows whose turn it is and follows turn changes.
+
 Only the browser holding the relay connection sends events or acts on presses; other players'
 sheets and selections are not tracked.
 

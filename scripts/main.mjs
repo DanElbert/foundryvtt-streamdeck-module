@@ -7,6 +7,7 @@ const BACKGROUND = "#1b1d24";
 
 const openSheets = new Set();
 let lastSelection = null;
+let lastCombat = null;
 
 function isActorSheet(app) {
   return app instanceof foundry.applications.sheets.ActorSheetV2;
@@ -54,6 +55,40 @@ function sendSelection(force = false) {
 }
 
 const scheduleSelection = foundry.utils.debounce(() => sendSelection(), 50);
+
+function computeCombat() {
+  const combat = game.combat;
+  if (!combat) return null;
+  const combatant = combat.combatant ?? combat.turns[0] ?? null;
+  return {
+    id: combat.id,
+    round: combat.round,
+    started: combat.started,
+    combatant: combatant
+      ? { id: combatant.id, name: combatant.name, actorUuid: combatant.actor?.uuid ?? null }
+      : null
+  };
+}
+
+function sendCombat(force = false) {
+  const combat = computeCombat();
+  const key = JSON.stringify(combat);
+  if (!force && key === lastCombat) return;
+  if (emit({ event: "combat", combat })) lastCombat = key;
+}
+
+const scheduleCombat = foundry.utils.debounce(() => sendCombat(), 100);
+
+async function startCombat() {
+  if (game.combat) return { error: "combat already exists" };
+  const tokens = (canvas?.tokens?.controlled ?? []).map((t) => t.document);
+  if (!tokens.length) return { error: "no selection" };
+  const combat = await Combat.implementation.create({ active: true });
+  await TokenDocument.implementation.createCombatants(tokens, { combat });
+  await combat.rollAll();
+  await combat.startCombat();
+  return { id: combat.id, count: tokens.length };
+}
 
 function conditions() {
   const types = CONFIG.DND5E?.conditionTypes ?? {};
@@ -144,7 +179,8 @@ function snapshot() {
   return {
     version: game.modules.get(MODULE_ID).version,
     open: [...currentOpen()],
-    selection: computeSelection()
+    selection: computeSelection(),
+    combat: computeCombat()
   };
 }
 
@@ -153,10 +189,11 @@ function emitSnapshot() {
   for (const uuid of currentOpen()) openSheets.add(uuid);
   emit({ event: "snapshot", open: [...openSheets] });
   sendSelection(true);
+  sendCombat(true);
 }
 
 Hooks.once("init", () => {
-  game.modules.get(MODULE_ID).api = { snapshot, conditions, toggleCondition, conditionArt };
+  game.modules.get(MODULE_ID).api = { snapshot, conditions, toggleCondition, conditionArt, startCombat };
 });
 
 Hooks.on("renderActorSheetV2", (app) => {
@@ -182,6 +219,19 @@ for (const hook of [
   "updateItem"
 ]) {
   Hooks.on(hook, scheduleSelection);
+}
+
+for (const hook of [
+  "createCombat",
+  "updateCombat",
+  "deleteCombat",
+  "createCombatant",
+  "updateCombatant",
+  "deleteCombatant",
+  "canvasReady",
+  "renderCombatTracker"
+]) {
+  Hooks.on(hook, scheduleCombat);
 }
 
 Hooks.on(`${REST_API_ID}.relayConnected`, emitSnapshot);

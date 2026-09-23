@@ -44,13 +44,14 @@ and plugin must be upgraded together.
 | `{event:"sheet", uuid, open}` | one actor sheet opened or closed |
 | `{event:"snapshot", open:[uuid...]}` | the complete set of open actor sheets; anything absent is closed |
 | `{event:"selection", count, statuses:{id: n}}` | `count` distinct selected actors; `n` of them have status `id`. Covers every status on any selected actor, not just the offered conditions. `count: 0` = nothing selected |
+| `{event:"combat", combat: null \| {id, round, started, combatant: null \| {id, name, actorUuid}}}` | the combat the GM is looking at and whose turn it is; `null` = no combat |
 
-A snapshot, followed by a forced `selection`, is sent on `ready` and on `foundry-rest-api.relayConnected` (fired after relay auth in
+A snapshot, followed by a forced `selection` and `combat`, is sent on `ready` and on `foundry-rest-api.relayConnected` (fired after relay auth in
 `webSocketManager.ts`). This covers a GM browser reload, which closes every sheet while the
 plugin's own relay session stays up. Whichever of the two fires while disconnected is a no-op; the
 other one delivers.
 
-`api.snapshot()` returns `{version, open, selection}`. The plugin calls it once per relay session through
+`api.snapshot()` returns `{version, open, selection, combat}`. The plugin calls it once per relay session through
 `execute-js`, which doubles as its "is the companion installed" probe.
 
 ## Sheet hooks
@@ -95,3 +96,27 @@ button stays lit. Honest, so not worked around.
 plugin's token-art script, and for the same reasons (blob URLs never taint the canvas; the deck
 never decodes SVG itself). Icon at 96², alpha 1 / 0.35 / 0.18; border solid for `on`, dashed for
 `mixed`, grey for `offline`. The dnd5e status SVGs are white on transparent, hence the dark tile.
+
+## Combat
+
+**Which combat:** `game.combat` — `ui.combat.viewed` when the sidebar tracker is rendered, otherwise
+the active combat for the viewed scene (`client/game.mjs`). So it is whatever the GM sees in the
+tracker, which is also the answer to "the first combat" when there are several.
+
+**Whose turn:** `combat.combatant ?? combat.turns[0]`. `combatant` is null until `startCombat()`
+(turn is null at round 0), so a combat built by hand but not started shows the top of the tracker.
+`turns` includes hidden and defeated combatants; fine for a GM-only deck. `combatant.actor` is the
+synthetic actor for unlinked tokens, so `actorUuid` opens the right sheet.
+
+**Change detection:** `create/update/delete` `Combat` and `Combatant` (document hooks fire on every
+client), plus `canvasReady` (scope depends on the viewed scene) and `renderCombatTracker` (GM
+switching tracker tabs). **Not** `combatStart`/`combatTurn`/`combatRound` — those fire only on the
+client that made the change. Recompute is debounced 100 ms because Combat rebuilds `turns` on its own
+50 ms `debounceSetup`; change-only emit like `selection`.
+
+**`api.startCombat()`:** refuses if `game.combat` exists or nothing is selected, then
+`Combat.create({active:true})` → `TokenDocument.createCombatants(tokens, {combat})` → `rollAll()` →
+`startCombat()`. `combat` is passed explicitly because `createCombatants` otherwise targets whatever
+the tracker is viewing. The combat is unlinked (no scene), same as the Token HUD toggle. dnd5e's
+`rollAll` goes through `Actor5e.getInitiativeRoll`, which never prompts (only
+`rollInitiativeDialog` does); hidden combatants' rolls are GM-only by core default.
