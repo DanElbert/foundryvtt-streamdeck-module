@@ -2,7 +2,7 @@
     "id": "foundryvtt-streamdeck",
     "title": "Stream Deck Companion",
     "description": "Companion to the foundryvtt-streamdeck OpenAction plugin. Pushes actor sheet, token condition and combat state over the REST API relay, and toggles conditions and starts combats, for Stream Deck buttons.",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "compatibility": {
         "minimum": 14,
         "verified": "14.368"

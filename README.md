@@ -10,6 +10,11 @@ polling.
 - Foundry VTT v14
 - The [REST API module](https://github.com/ThreeHats/foundryvtt-rest-api) (`foundry-rest-api`),
   paired with a relay. Events travel over its existing relay connection.
+- A relay built from the [DanElbert/foundryvtt-rest-api-relay](https://github.com/DanElbert/foundryvtt-rest-api-relay)
+  fork. The Stream Deck's requests use a `streamdeck` message type that the stock relay rejects.
+
+The REST API module's *Allow Execute JavaScript* setting is not needed and can stay off: every
+request goes to a fixed set of actions in this module, never to arbitrary code.
 
 ## Install
 
