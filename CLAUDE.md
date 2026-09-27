@@ -189,3 +189,24 @@ over the dark tile, with no border / `accent` border / `offline` border.
 
 **Known limitation:** cross-origin S3-hosted art is unreachable by any route (the relay's own
 `/download` is the same `fetch` in the same browser). Fix it with CORS headers on the bucket.
+
+## Actor and macro lists (`actors`, `macros`)
+
+`[{uuid, name, folder}]`, world documents only. `folder` is the full path root-first, `"A / B"`
+(`folder.ancestors` is nearest-first, hence the reverse), or `null` when unfiled. Sorted by path
+then name, so unfiled entries come first; the PI turns each path into one `<optgroup>` because
+optgroups can't nest. `actors` replaced the REST module's `search` request, which carries no folder.
+`macros` lists only `canExecute` macros.
+
+## Macros (`executeMacro`, `macroArt`)
+
+`executeMacro` checks `documentName === "Macro"` and `canExecute` (Macro#execute would otherwise
+just warn and return nothing), then **does not await** the run. A script macro awaiting a dialog or
+a long animation would otherwise hold the request past the plugin's 25 s timeout and alert on a
+macro that worked. The reply therefore means "started", and a rejected script promise goes to
+`Hooks.onError`, which notifies in Foundry. No scope is passed, so Foundry derives
+`speaker`/`token`/`actor` from the controlled token, same as the hotbar.
+
+`macroArt(uuid, {offline})` returns `{name, ready, offline}` via the same `drawTile` path. SVG icons
+(core `icons/svg/*`, white on transparent) are drawn at 96² like conditions; raster icons fill the
+tile like token art.

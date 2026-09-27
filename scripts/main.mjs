@@ -242,7 +242,75 @@ async function actorArt(uuid, { source, accent, offline }) {
   };
 }
 
-const ACTIONS = { snapshot, conditions, toggleCondition, conditionArt, startCombat, toggleSheet, actorArt };
+function folderPath(doc) {
+  const folder = doc.folder;
+  if (!folder) return null;
+  return [...folder.ancestors.reverse(), folder].map((f) => f.name).join(" / ");
+}
+
+function listing(docs) {
+  return docs
+    .map((doc) => ({ uuid: doc.uuid, name: doc.name, folder: folderPath(doc) }))
+    .sort((a, b) => (a.folder ?? "").localeCompare(b.folder ?? "") || a.name.localeCompare(b.name));
+}
+
+function actors() {
+  return listing([...game.actors]);
+}
+
+function macros() {
+  return listing(game.macros.filter((m) => m.canExecute));
+}
+
+async function findMacro(uuid) {
+  const macro = await fromUuid(uuid);
+  return macro?.documentName === "Macro" ? macro : null;
+}
+
+async function executeMacro(uuid) {
+  const macro = await findMacro(uuid);
+  if (!macro) return { error: "macro not found" };
+  if (!macro.canExecute) return { error: "not permitted" };
+  Promise.resolve()
+    .then(() => macro.execute())
+    .catch((e) =>
+      Hooks.onError(`${MODULE_ID}.executeMacro`, e, { msg: `Macro "${macro.name}" failed`, log: "error", notify: "error" })
+    );
+  return { name: macro.name };
+}
+
+async function macroArt(uuid, { offline }) {
+  const macro = await findMacro(uuid);
+  if (!macro) return { error: "macro not found" };
+  const src = macro.img;
+  let img;
+  try {
+    img = await loadImage(src);
+  } catch (e) {
+    return { error: String(e?.message ?? e), src };
+  }
+  const size = /\.svg(\?|$)/i.test(src) ? ICON : TILE;
+  return {
+    src,
+    name: macro.name,
+    ready: drawTile(img, { size }),
+    offline: drawTile(img, { size, alpha: 0.35, border: offline })
+  };
+}
+
+const ACTIONS = {
+  snapshot,
+  conditions,
+  toggleCondition,
+  conditionArt,
+  startCombat,
+  toggleSheet,
+  actorArt,
+  actors,
+  macros,
+  executeMacro,
+  macroArt
+};
 
 async function onRequest(data) {
   const reply = { type: `${REQUEST_TYPE}-result`, requestId: data?.requestId };

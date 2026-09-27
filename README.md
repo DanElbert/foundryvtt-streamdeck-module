@@ -41,6 +41,9 @@ Enable it in the world alongside the REST API module. There are no settings.
   selected tokens, rolls initiative for all of them and starts round 1. While a combat exists (the
   one the combat tracker is showing), the deck shows whose turn it is and follows turn changes.
 
+- **Macro buttons.** Pressing runs the chosen macro in that browser, with its selected tokens as
+  the speaker. The deck's dropdowns list actors and macros grouped by their folders.
+
 Only the browser holding the relay connection sends events or acts on presses; other players'
 sheets and selections are not tracked.
 
