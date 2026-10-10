@@ -95,7 +95,7 @@ async function startCombat() {
 function conditions() {
   const types = CONFIG.DND5E?.conditionTypes ?? {};
   return Object.entries(types)
-    .filter(([id, type]) => !type.pseudo && id !== "exhaustion")
+    .filter(([id, type]) => (!type.pseudo || id === "surprised") && id !== "exhaustion")
     .map(([id, type]) => ({
       id,
       name: game.i18n.localize(type.name),

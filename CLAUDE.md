@@ -109,8 +109,10 @@ schedule a 50 ms-debounced recompute; `controlToken` fires once per token in bur
 it is back.
 
 `api.conditions()` is the non-`pseudo` entries of `CONFIG.DND5E.conditionTypes` minus `exhaustion`
-(levels, not a toggle — deliberately skipped). `img` comes from `CONFIG.statusEffects`, which dnd5e
-rebuilds, falling back to the condition type's own.
+(levels, not a toggle — deliberately skipped) plus `surprised`. dnd5e flags surprised `pseudo` only
+because it is absent from the rules appendix; it is still registered in `CONFIG.statusEffects` with
+its own icon and drives initiative disadvantage, so it toggles like any other condition.
+`img` comes from `CONFIG.statusEffects`, which dnd5e rebuilds, falling back to the condition type's own.
 
 `api.toggleCondition(id)` is tri-state: if every selected actor has it, `toggleStatusEffect(id,
 {active:false})` on all; otherwise `{active:true}` on the ones missing it. Same call as the Token
