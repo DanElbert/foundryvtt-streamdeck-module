@@ -3,69 +3,64 @@
 Code-level notes for `foundryvtt-streamdeck-module` (module id `foundryvtt-streamdeck`). The
 Foundry-side companion to `../foundryvtt-streamdeck-plugin`. User-facing docs are in `README.md`.
 
-## Transport: piggybacking on the REST module's relay socket
+## Transport: our own WebSocket to the plugin
 
-There is no socket of our own. Events go out through the `foundry-rest-api` module's existing relay
-connection as `hook-event` frames with a custom hook name:
+The plugin hosts a WebSocket server on the machine running OpenDeck (`127.0.0.1:28415` by default);
+this module dials it from the GM's browser. Nothing else is involved: the ThreeHats
+`foundry-rest-api` module and the Go relay were retired in 1.0.
 
-```js
-game.modules.get("foundry-rest-api").api.getWebSocketManager()
-  .send({ type: "hook-event", data: { hook: "foundryvtt-streamdeck.event", args: [payload] } });
+Three **client-scoped** settings (`scope: "client"`, so per browser; only the browser beside
+OpenDeck gets a token and only it connects): `enabled` ("Stream Deck: Enabled"), `pluginUrl`
+("Stream Deck: Plugin URL", default `ws://localhost:28415`) and `token` ("Stream Deck: Token"). Each
+`onChange` runs a 100 ms-debounced `reconnect`, which is how a settings save takes effect without a
+reload. `connect` runs once on `ready` and is a no-op without a token or with `enabled` off.
+
+Why `ws://` from an https page works: browsers exempt loopback from mixed-content blocking (Chrome;
+Firefox since bug 1376309). Recent Chrome may show a one-time Local Network Access prompt.
+
+**Handshake.** On `open` the module sends `{type:"hello", token, version, world: game.world.id}` as
+its first frame and waits for `{type:"connected", plugin}`; `authed` flips true only then, and
+`emit` is gated on it, so nothing is pushed to a socket that might still be rejected. `world` lets
+the plugin keep its art caches across a browser reload of the same world.
+
+**Close codes** (`onclose`):
+
+| Code | Meaning | Reaction |
+|---|---|---|
+| `4001` | no/bad hello (plugin timed out waiting) | reconnect with backoff |
+| `4002` | token rejected | one permanent `ui.notifications.error`, `stopped = true`, no retry until a setting changes |
+| `4003` | another browser took the plugin over | log, no retry (don't fight) |
+| `1001` | plugin reconfigured / shutting down | reconnect with backoff |
+| anything else (`1006` …) | network / plugin gone | reconnect with backoff `[1,2,4,8,15,30]` s |
+
+`reconnect()` resets `stopped` and the backoff, closes any live socket with `1000` after nulling its
+`onclose` (so that close doesn't schedule a retry), then connects. Stale sockets are ignored by
+checking `ws !== socket` in every handler.
+
+**Keep-alive is the plugin's job.** It sends protocol pings every 20 s and drops a peer that hasn't
+answered; the browser pongs automatically, so there is nothing to do here.
+
+## Requests: `request` / `result` frames
+
+```
+plugin → module   {"type":"request","requestId":…,"action":"toggleSheet","args":["Actor.x"]}
+module → plugin   {"type":"result","requestId":…,"result":{…}}   (or top-level "error")
 ```
 
-This works because the relay's `hook-event` fanout
-(`foundryvtt-rest-api-relay/go-relay/internal/server/server.go`, `fanoutHookEvent`) never checks the
-hook name against the REST module's `FORWARDED_HOOKS` allowlist, and forwards to every `/ws/api`
-client subscribed to the `hooks` channel. A plain `Hooks.callAll("foundryvtt-streamdeck.event")` is
-**not** forwarded — the allowlist is private and fixed.
-
-- `isRelayConnected()` is checked before `getWebSocketManager()`: the latter logs a warning on every
-  call from a browser that has no relay token, i.e. every player client.
-- Only the browser holding the relay connection emits. That is the same browser that answers the
-  plugin's `streamdeck` requests, so the events describe the sheets the plugin toggles.
-- Side effect: the plugin's `hooks` subscription makes the REST module turn on its 33 built-in
-  forwarded hooks. The plugin drops them. WS subscribers can't filter server-side (the relay's
-  `AddWSEventFunc` ignores `filters`).
-
-The plugin receives:
-
-```json
-{"type":"hook-event","hook":"foundryvtt-streamdeck.event",
- "data":{"type":"hook-event","data":{"hook":"foundryvtt-streamdeck.event","args":[PAYLOAD]}}}
-```
-
-## Requests: the `streamdeck` message type
-
-The plugin → Foundry direction is a real message type, not `execute-js`:
-
-```
-plugin → relay   {"type":"streamdeck","requestId":…,"action":"toggleSheet","args":["Actor.x"]}
-relay → module   same, with the relay's own internal requestId
-module → relay   {"type":"streamdeck-result","requestId":…,"result":{…}}   (or top-level "error")
-```
-
-- **Relay side:** `streamdeck` is added to `PendingRequestTypes` in the DanElbert relay fork
-  (`go-relay/internal/ws/pending.go`). The stock relay rejects unknown types with
-  `Unknown message type`, and that same list is what makes it route `streamdeck-result` back.
-- **Module side:** `registerHandler()` calls `getWebSocketManager().onMessageType("streamdeck",
-  onRequest)`. The REST module dispatches incoming frames by `type` through a `Map`
-  (`webSocketManager.ts` `onMessage`), so a new type adds a handler without touching the built-ins.
-  `onMessageType` is a `Map.set`, so re-registering is harmless; it runs on `ready` and on every
-  `foundry-rest-api.relayConnected`, next to `emitSnapshot`. `WebSocketManager` is a singleton, so
-  the handler survives reconnects.
 - **`onRequest`** looks `action` up in `ACTIONS` (the same object exposed as `module.api`) and awaits
   it with `args`. An unknown action, or one that throws, becomes a top-level `error` (the plugin sees
-  `RelayError::Remote`). A *domain* failure like `{error:"no selection"}` is a normal return value
+  `ServerError::Remote`). A *domain* failure like `{error:"no selection"}` is a normal return value
   and stays inside `result`.
-- **Return plain JSON only.** `send()` does `JSON.stringify` inside a try/catch that swallows errors:
-  returning a Document or Application means **no reply at all** and a 25 s timeout on the plugin side.
-- This replaces `execute-js` entirely, so *Allow Execute JavaScript* can stay off. The action set is
-  fixed; nothing from the wire is evaluated.
+- **Return plain JSON only.** `send()` wraps `JSON.stringify`; a cyclic or otherwise unserialisable
+  reply is turned into a top-level `error` ("reply not serialisable") rather than silently dropped,
+  so the plugin alerts at once instead of timing out after 25 s.
+- The action set is fixed; nothing from the wire is evaluated, and there is no execute-JS path.
 
-## Payloads on `foundryvtt-streamdeck.event`
+## Events: `{type:"event", event:…}` frames
 
-The hook name was `foundryvtt-streamdeck.sheet` in 0.1.0. The plugin matches it exactly, so module
-and plugin must be upgraded together.
+Every push is `emit(payload)` → `{type:"event", ...payload}`, so `event` sits at the top level and
+the plugin's `event_loop` keys on it directly. Module and plugin must be upgraded together (1.0
+changed the transport on both sides).
 
 | Payload | Meaning |
 |---|---|
@@ -74,16 +69,12 @@ and plugin must be upgraded together.
 | `{event:"selection", count, statuses:{id: n}}` | `count` distinct selected actors; `n` of them have status `id`. Covers every status on any selected actor, not just the offered conditions. `count: 0` = nothing selected |
 | `{event:"combat", combat: null \| {id, round, started, combatant: null \| {id, name, actorUuid}}}` | the combat the GM is looking at and whose turn it is; `null` = no combat |
 
-A snapshot, followed by a forced `selection` and `combat`, is sent on `ready` and on `foundry-rest-api.relayConnected` (fired after relay auth in
-`webSocketManager.ts`). This covers a GM browser reload, which closes every sheet while the
-plugin's own relay session stays up. Whichever of the two fires while disconnected is a no-op; the
-other one delivers.
+A snapshot, followed by a forced `selection` and `combat`, is sent as soon as `connected` arrives
+(`emitSnapshot`). `lastSelection`/`lastCombat` only advance when `emit` actually sent, so state that
+changed while disconnected is re-sent on the next connection.
 
-The `snapshot` event also carries `version`, so the plugin learns the companion is present from a
-push, not only from its sync request.
-
-`api.snapshot()` returns `{version, open, selection, combat}`. The plugin requests it once per relay
-session; no reply within 5 s is how it concludes this module isn't active.
+`api.snapshot()` returns `{version, open, selection, combat}`. The plugin also requests it once per
+session right after `connected`; the two agree by construction.
 
 ## Sheet hooks
 
@@ -189,15 +180,15 @@ over the dark tile, with no border / `accent` border / `offline` border.
 - Downscaling here caps each variant at ~15 KB instead of a multi-MB base64, and fixes the aspect
   ratio at the source.
 
-**Known limitation:** cross-origin S3-hosted art is unreachable by any route (the relay's own
-`/download` is the same `fetch` in the same browser). Fix it with CORS headers on the bucket.
+**Known limitation:** cross-origin S3-hosted art is unreachable: the `fetch` runs in the GM's
+browser, and there is no other route. Fix it with CORS headers on the bucket.
 
 ## Actor and macro lists (`actors`, `macros`)
 
 `[{uuid, name, folder}]`, world documents only. `folder` is the full path root-first, `"A / B"`
 (`folder.ancestors` is nearest-first, hence the reverse), or `null` when unfiled. Sorted by path
 then name, so unfiled entries come first; the PI turns each path into one `<optgroup>` because
-optgroups can't nest. `actors` replaced the REST module's `search` request, which carries no folder.
+optgroups can't nest; that folder path is why `actors` exists instead of a generic search.
 `macros` lists only `canExecute` macros.
 
 ## Macros (`executeMacro`, `macroArt`)

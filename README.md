@@ -2,19 +2,16 @@
 
 A Foundry VTT module that works alongside the
 [foundryvtt-streamdeck-plugin](https://github.com/DanElbert/foundryvtt-streamdeck-plugin) OpenAction
-plugin. It pushes events from Foundry to the Stream Deck so buttons update immediately instead of
-polling.
+plugin. It connects the GM's browser to the plugin running beside OpenDeck and pushes events to the
+Stream Deck so buttons update immediately instead of polling.
 
 ## Requirements
 
 - Foundry VTT v14
-- The [REST API module](https://github.com/ThreeHats/foundryvtt-rest-api) (`foundry-rest-api`),
-  paired with a relay. Events travel over its existing relay connection.
-- A relay built from the [DanElbert/foundryvtt-rest-api-relay](https://github.com/DanElbert/foundryvtt-rest-api-relay)
-  fork. The Stream Deck's requests use a `streamdeck` message type that the stock relay rejects.
+- The plugin, version 1.0 or later, running in OpenDeck on the same machine as the GM's browser (or
+  on one it can reach). Nothing else: no relay, no REST API module.
 
-The REST API module's *Allow Execute JavaScript* setting is not needed and can stay off: every
-request goes to a fixed set of actions in this module, never to arbitrary code.
+Every request from the deck goes to a fixed set of actions in this module, never to arbitrary code.
 
 ## Install
 
@@ -24,13 +21,22 @@ Manifest URL:
 https://raw.githubusercontent.com/DanElbert/foundryvtt-streamdeck-module/main/module.json
 ```
 
-Enable it in the world alongside the REST API module. There are no settings.
+Enable it in the world. Then, in the browser that runs beside OpenDeck (normally the GM's), open
+**Configure Settings → Module Settings** and set:
+
+- **Stream Deck: Plugin URL** — `ws://localhost:28415` unless the port was changed in the plugin.
+- **Stream Deck: Token** — generated in any Foundry button's settings in OpenDeck (**Plugin
+  connection → Generate**, then **Copy**).
+- **Stream Deck: Enabled** — on by default; turn it off to stop this browser connecting.
+
+These settings are per browser. Other players' browsers never connect. Saving the settings connects
+right away; a wrong token shows a permanent error notification until it is corrected.
 
 ## What it does
 
-- **Actor sheet state.** When an actor sheet opens or closes in the browser that holds the REST API
-  relay connection (normally the GM's), the matching Stream Deck buttons update right away. After
-  that browser reloads or reconnects, it sends the full list of open sheets so the deck catches up.
+- **Actor sheet state.** When an actor sheet opens or closes in the connected browser, the matching
+  Stream Deck buttons update right away. Whenever the browser connects, including after a reload, it
+  sends the full list of open sheets so the deck catches up.
 
 - **Condition buttons.** Whatever tokens are selected in that browser, the deck's condition
   buttons show whether each condition is on all of them, some of them, or none, and pressing a
@@ -45,8 +51,9 @@ Enable it in the world alongside the REST API module. There are no settings.
 - **Macro buttons.** Pressing runs the chosen macro in that browser, with its selected tokens as
   the speaker. The deck's dropdowns list actors and macros grouped by their folders.
 
-Only the browser holding the relay connection sends events or acts on presses; other players'
-sheets and selections are not tracked.
+Only the browser that holds the plugin connection sends events or acts on presses; other players'
+sheets and selections are not tracked. If a second browser connects with the same token it takes
+over, and the first one stops trying.
 
 **Known quirk:** a condition implied by another one — *incapacitated* while a token is unconscious,
 paralyzed, petrified or stunned — shows as on, but pressing it can't remove it. Remove the

@@ -1,15 +1,22 @@
 const MODULE_ID = "foundryvtt-streamdeck";
-const REST_API_ID = "foundry-rest-api";
-const EVENT_HOOK = `${MODULE_ID}.event`;
+const SETTINGS = { enabled: "enabled", url: "pluginUrl", token: "token" };
+const DEFAULT_URL = "ws://localhost:28415";
 const TILE = 144;
 const ICON = 96;
 const BACKGROUND = "#1b1d24";
-const REQUEST_TYPE = "streamdeck";
 const VIDEO = /\.(mp4|m4v|webm|ogv)(\?|$)/i;
+const BACKOFF = [1, 2, 4, 8, 15, 30];
+const CLOSE_BAD_TOKEN = 4002;
+const CLOSE_REPLACED = 4003;
 
 const openSheets = new Set();
 let lastSelection = null;
 let lastCombat = null;
+let socket = null;
+let authed = false;
+let attempt = 0;
+let retryTimer = null;
+let stopped = false;
 
 function isActorSheet(app) {
   return app instanceof foundry.applications.sheets.ActorSheetV2;
@@ -23,12 +30,21 @@ function currentOpen() {
   return open;
 }
 
+function send(frame) {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  let text;
+  try {
+    text = JSON.stringify(frame);
+  } catch (e) {
+    text = JSON.stringify({ type: frame.type, requestId: frame.requestId, error: `reply not serialisable: ${e?.message ?? e}` });
+  }
+  socket.send(text);
+  return true;
+}
+
 function emit(payload) {
-  const api = game.modules.get(REST_API_ID)?.api;
-  if (!api?.isRelayConnected?.()) return false;
-  const socket = api.getWebSocketManager();
-  if (!socket) return false;
-  return socket.send({ type: "hook-event", data: { hook: EVENT_HOOK, args: [payload] } });
+  if (!authed) return false;
+  return send({ type: "event", ...payload });
 }
 
 function selectedActors() {
@@ -313,7 +329,7 @@ const ACTIONS = {
 };
 
 async function onRequest(data) {
-  const reply = { type: `${REQUEST_TYPE}-result`, requestId: data?.requestId };
+  const reply = { type: "result", requestId: data?.requestId };
   const fn = ACTIONS[data?.action];
   if (!fn) {
     reply.error = `unknown action: ${data?.action}`;
@@ -324,41 +340,138 @@ async function onRequest(data) {
       reply.error = String(e?.message ?? e);
     }
   }
-  game.modules.get(REST_API_ID)?.api?.getWebSocketManager()?.send(reply);
+  send(reply);
 }
 
-function registerHandler() {
-  const api = game.modules.get(REST_API_ID)?.api;
-  if (!api?.isRelayConnected?.()) return false;
-  const socket = api.getWebSocketManager();
-  if (!socket) return false;
-  socket.onMessageType(REQUEST_TYPE, onRequest);
-  return true;
+function version() {
+  return game.modules.get(MODULE_ID).version;
 }
+
+function setting(key) {
+  return game.settings.get(MODULE_ID, SETTINGS[key]);
+}
+
+function connect() {
+  if (socket || stopped) return;
+  const token = String(setting("token") ?? "").trim();
+  if (!setting("enabled") || !token) return;
+  const url = String(setting("url") ?? "").trim() || DEFAULT_URL;
+  let ws;
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    console.warn(`[${MODULE_ID}] cannot open ${url}: ${e?.message ?? e}`);
+    scheduleReconnect();
+    return;
+  }
+  socket = ws;
+  ws.onopen = () => ws.send(JSON.stringify({ type: "hello", token, version: version(), world: game.world.id }));
+  ws.onmessage = (event) => {
+    if (ws !== socket) return;
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch (e) {
+      return;
+    }
+    if (data?.type === "connected") {
+      authed = true;
+      attempt = 0;
+      console.info(`[${MODULE_ID}] connected to plugin ${data.plugin ?? "?"} at ${url}`);
+      emitSnapshot();
+    } else if (data?.type === "request") {
+      onRequest(data);
+    }
+  };
+  ws.onclose = (event) => {
+    if (ws !== socket) return;
+    socket = null;
+    authed = false;
+    if (event.code === CLOSE_BAD_TOKEN) {
+      stopped = true;
+      ui.notifications.error("Stream Deck: the plugin rejected the token. Check the module settings.", { permanent: true });
+      return;
+    }
+    if (event.code === CLOSE_REPLACED) {
+      console.info(`[${MODULE_ID}] another browser took over the plugin connection`);
+      return;
+    }
+    scheduleReconnect();
+  };
+}
+
+function scheduleReconnect() {
+  if (retryTimer || stopped) return;
+  const delay = BACKOFF[Math.min(attempt, BACKOFF.length - 1)] * 1000;
+  attempt += 1;
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    connect();
+  }, delay);
+}
+
+function reconnect() {
+  stopped = false;
+  attempt = 0;
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  if (socket) {
+    const ws = socket;
+    socket = null;
+    authed = false;
+    ws.onclose = null;
+    ws.close(1000, "reconfigured");
+  }
+  connect();
+}
+
+const scheduleReconfigure = foundry.utils.debounce(reconnect, 100);
 
 function snapshot() {
   return {
-    version: game.modules.get(MODULE_ID).version,
+    version: version(),
     open: [...currentOpen()],
     selection: computeSelection(),
     combat: computeCombat()
   };
 }
 
-function onRelayConnected() {
-  registerHandler();
-  emitSnapshot();
-}
-
 function emitSnapshot() {
   openSheets.clear();
   for (const uuid of currentOpen()) openSheets.add(uuid);
-  emit({ event: "snapshot", version: game.modules.get(MODULE_ID).version, open: [...openSheets] });
+  emit({ event: "snapshot", version: version(), open: [...openSheets] });
   sendSelection(true);
   sendCombat(true);
 }
 
 Hooks.once("init", () => {
+  game.settings.register(MODULE_ID, SETTINGS.enabled, {
+    name: "Stream Deck: Enabled",
+    hint: "Connect this browser to the Stream Deck plugin. Only the browser running beside OpenDeck needs this.",
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: scheduleReconfigure
+  });
+  game.settings.register(MODULE_ID, SETTINGS.url, {
+    name: "Stream Deck: Plugin URL",
+    hint: `Shown in the plugin's button settings in OpenDeck. ${DEFAULT_URL} unless the port was changed.`,
+    scope: "client",
+    config: true,
+    type: String,
+    default: DEFAULT_URL,
+    onChange: scheduleReconfigure
+  });
+  game.settings.register(MODULE_ID, SETTINGS.token, {
+    name: "Stream Deck: Token",
+    hint: "Generated in the plugin's button settings in OpenDeck. Paste it here.",
+    scope: "client",
+    config: true,
+    type: String,
+    default: "",
+    onChange: scheduleReconfigure
+  });
   game.modules.get(MODULE_ID).api = { ...ACTIONS };
 });
 
@@ -400,5 +513,4 @@ for (const hook of [
   Hooks.on(hook, scheduleCombat);
 }
 
-Hooks.on(`${REST_API_ID}.relayConnected`, onRelayConnected);
-Hooks.once("ready", onRelayConnected);
+Hooks.once("ready", connect);
